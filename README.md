@@ -13,6 +13,8 @@ Enigma steampunk a treno di ingranaggi, in un unico file HTML. Machina N° 006 d
 
 Il giocatore deve collegare un motore a uno o più perni scegliendo e posizionando ingranaggi dal vassoio, in modo che ogni perno giri con la velocità e il verso richiesti. Il gioco inizia con un tutorial animato sul funzionamento degli ingranaggi.
 
+[Puoi giocarci qui](https://tagtthespellcaster.github.io/Machinamentum-Anisocyclicum/)
+
 **BREVETTO MECCANICO 1.1.2 – 1894**
 
 ## Requisiti
