@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Machinamentum Anisocyclicum</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:20px;background:#1b1f1e;color:#e8c995;font-family:system-ui,sans-serif}
+main{max-width:960px;margin:auto}
+h1{font-family:Georgia,serif;font-weight:normal;letter-spacing:.08em;margin:0 0 12px;font-size:clamp(20px,4.2vw,32px)}
+.frame{border:1px solid #806344;border-radius:9px;overflow:hidden;background:#111514}
+canvas{display:block;width:100%;height:auto;touch-action:none;cursor:grab}
+.hud{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:9px 12px;background:#292722;color:#e8c995;font:12px ui-monospace,monospace;letter-spacing:.04em}
+.levels{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 0}
+.controls{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:12px 0}
+button{border:1px solid #99764b;border-radius:5px;background:#38352e;color:#edcf9c;padding:9px 14px;font-size:12px;font-weight:600;cursor:pointer;user-select:none;-webkit-user-select:none}
+button:active{background:#806344}
+.levels button{min-width:42px;padding:8px 10px}
+.levels button.cur{background:#806344;color:#fff}
+.levels button.done::after{content:" \2713"}
+.goal{font-size:14px;color:#edcf9c;line-height:1.5;margin:12px 0 6px}
+[hidden]{display:none!important}
+.vol{display:flex;align-items:center;gap:6px;font:11px ui-monospace,monospace;color:#b9b2a4}
+.vol input{width:130px;accent-color:#c79a56}
+.nav{display:flex;gap:7px;align-items:center}
+.nav .step{font:12px ui-monospace,monospace;color:#b9b2a4;min-width:78px;text-align:center}
+.note{font-size:12px;color:#b9b2a4;line-height:1.55}
+.footer{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:16px;padding-top:10px;border-top:1px solid #806344;font:11px Georgia,serif;letter-spacing:.14em;color:#a8885a}
+</style>
+</head>
+<body>
+<main>
+<h1>MACHINAMENTUM ANISOCYCLICUM</h1>
+<div class="frame">
+<div class="hud">
+<span id="gcstatus">&#9881; IN FUNZIONE</span>
+<span>ENIGMA: <b id="gclevel">-</b></span>
+<span>INGRANAGGI POSIZIONATI: <b id="gcused">0</b></span>
+<span>RECORD: <b id="gcbest">-</b></span>
+</div>
+<canvas id="gccanvas" width="960" height="650" aria-label="Enigma a ingranaggi"></canvas>
+</div>
+<div class="levels" id="gclevels"></div>
+<p class="goal" id="gcgoal"></p>
+<div class="controls">
+<button id="gcreset">SVUOTA LA SCACCHIERA</button>
+<button id="gcsound">EFFETTI: ON</button>
+<button id="gcmusic">MUSICA: ON</button>
+<label class="vol">VOLUME <input type="range" id="gcvol" min="0" max="100" value="60" aria-label="Volume musica"> <span id="gcvoldb">-</span></label>
+<span class="nav" id="gctnav" hidden><button id="gctprev">&#9664; INDIETRO</button><span class="step" id="gctstep"></span><button id="gctnext">AVANTI &#9654;</button></span>
+</div>
+<p class="note">Trascina gli ingranaggi dal vassoio sulla scacchiera: si agganciano da soli a quelli vicini e ai perni (cerchi con croce). Doppio clic o clic destro su un ingranaggio posato lo rimette nel vassoio; un tocco senza trascinare su un ingranaggio singolo lo porta sull'altro piano (ottone o rame). Ogni ingranamento inverte il verso di rotazione; i giri al minuto dipendono dal numero di denti: <i>giri finali = giri del motore &times; denti del motore &divide; denti dell'ultima ruota</i>. Le ruote ottone (piano posteriore) e rame (piano anteriore) ingranano solo con ruote dello stesso colore; le ruote doppie, con due ingranaggi sullo stesso asse, collegano i due piani.</p>
+<div class="footer"><span>OFFICINA DEGLI ENIGMI · Machina N° 006</span><span>BREVETTO MECCANICO 1.1.2 – 1894</span></div>
+</main>
+<script>
+(()=>{
+'use strict';
+const BW=960,BH=520,CW=960,CH=650;
+const MOD=2.5,TIP=4,ROOT=5,TOL=1.5,SNAP=42,HOLD=1.2;
+const rad=n=>MOD*n;
+const $=id=>document.getElementById(id);
+const cv=$('gccanvas'),ctx=cv.getContext('2d');
+const DPR=Math.min(2,(typeof window!=='undefined'&&window.devicePixelRatio)||1);
+cv.width=CW*DPR;cv.height=CH*DPR;
+
+/*LEVELS_START*/
+/* inv: numero = ingranaggio singolo (piano libero); [[n,piano],[n,piano]] = ruota doppia.
+   targets: con "n" = utenza fissa; senza "n" = perno su cui montare un ingranaggio. */
+const LEVELS=[
+  {name:'Come funzionano gli ingranaggi',tutorial:true,
+   goal:'',
+   motor:{x:0,y:0,n:12,rpm:60},
+   targets:[],
+   inv:[]},
+  {name:'Verso concorde',
+   goal:"Collega il motore all'utenza trascinando gli ingranaggi dal vassoio: deve girare nello stesso verso del motore (orario), a 60 giri/min. Ogni ingranamento inverte il verso; non servono tutte le ruote.",
+   motor:{x:130,y:300,n:12,rpm:60},
+   targets:[{x:370,y:300,n:12,dir:1,rpm:60}],
+   inv:[36,18,18]},
+  {name:'Riduzione di giri',
+   goal:"L'utenza da 36 denti deve girare in senso orario a 20 giri/min. Conta quanti ingranamenti servono.",
+   motor:{x:130,y:400,n:12,rpm:60},
+   targets:[{x:470,y:200,n:36,dir:1,rpm:20}],
+   inv:[16,20,24,12]},
+  {name:'Moltiplicazione',
+   goal:"Monta un ingranaggio sul perno (cerchio con croce): deve girare in senso antiorario a 180 giri/min. Scegli la ruota con il numero di denti giusto.",
+   motor:{x:130,y:260,n:24,rpm:60},
+   targets:[{x:420,y:260,dir:-1,rpm:180}],
+   inv:[8,20,24,16,30,14,28]},
+  {name:'Le colonne',
+   goal:"Aggira le colonne: il perno deve girare in senso orario a 40 giri/min.",
+   motor:{x:110,y:420,n:16,rpm:60},
+   targets:[{x:520,y:150,dir:1,rpm:40}],
+   obstacles:[{x:300,y:290,r:35},{x:430,y:330,r:30}],
+   inv:[24,28,30,32,20,36,18]},
+  {name:'Asse doppio',
+   goal:"Il perno deve girare in senso orario a 10 giri/min. Le ruote di piani diversi non si toccano: usa la ruota doppia, che le collega sullo stesso asse. Un tocco su un ingranaggio singolo lo porta sull'altro piano.",
+   motor:{x:130,y:300,n:12,rpm:60},
+   targets:[{x:290,y:420,dir:1,rpm:10}],
+   inv:[[[36,0],[12,1]],24,18,20,16,28]},
+  {name:'Due uscite',
+   goal:"Due perni da alimentare: quello in alto in senso antiorario a 30 giri/min, quello in basso in senso orario a 90 giri/min.",
+   motor:{x:110,y:260,n:12,rpm:60},
+   targets:[{x:300,y:110,dir:-1,rpm:30},{x:280,y:420,dir:1,rpm:90}],
+   inv:[40,8,24,20,16,30]},
+  {name:'Tre colonne',
+   goal:"Il perno deve girare in senso orario a 30 giri/min. Tre colonne ostruiscono il percorso: scegli la ruota del perno e quelle di collegamento. Le ruote che non servono restano nel vassoio.",
+   motor:{x:90,y:420,n:14,rpm:60},
+   targets:[{x:540,y:200,dir:1,rpm:30}],
+   obstacles:[{x:250,y:305,r:34},{x:360,y:140,r:30},{x:480,y:400,r:30}],
+   inv:[28,26,32,30,24,22,20,36]},
+  {name:'Albero doppio, utenza fissa',
+   goal:"L'utenza da 30 denti (sul piano rame) deve girare in senso antiorario a 16 giri/min. Una ruota semplice non basta: serve la ruota doppia, e dopo di essa le ruote devono stare sul piano rame. Conta gli ingranamenti.",
+   motor:{x:90,y:130,n:10,rpm:120},
+   targets:[{x:690,y:310,n:30,plane:1,dir:-1,rpm:16}],
+   obstacles:[{x:470,y:200,r:40}],
+   inv:[[[40,0],[16,1]],34,32,30,28,24,36,20]},
+  {name:'Il bivio',
+   goal:"Due perni da alimentare: quello in alto in senso antiorario a 40 giri/min, quello in basso in senso orario a 90 giri/min. Ogni perno richiede una ruota precisa; le altre servono da collegamento, oppure restano nel vassoio.",
+   motor:{x:100,y:300,n:12,rpm:60},
+   targets:[{x:330,y:110,dir:-1,rpm:40},{x:400,y:430,dir:1,rpm:90}],
+   obstacles:[{x:230,y:410,r:28}],
+   inv:[18,8,30,20,24,16,28,36]},
+  {name:'Moltiplicazione composta',
+   goal:"Il perno deve girare in senso orario a 45 giri/min. La ruota doppia riduce con la ruota grande e trasmette con la piccola, sull'altro piano: le ruote che la seguono devono stare sul piano rame. Scegli con cura la ruota del perno.",
+   motor:{x:80,y:420,n:16,rpm:90},
+   targets:[{x:560,y:170,dir:1,rpm:45}],
+   obstacles:[{x:330,y:190,r:36}],
+   inv:[[[32,0],[12,1]],12,34,40,28,20,36,24,16]},
+  {name:'Il gran regolatore',
+   goal:"Perno in alto: senso orario, 30 giri/min. Perno in basso: senso antiorario, 240 giri/min. Con ruote semplici dal motore non si supera un certo rapporto: per il secondo perno serve la ruota doppia.",
+   motor:{x:90,y:300,n:12,rpm:60},
+   targets:[{x:480,y:130,dir:1,rpm:30},{x:540,y:410,dir:-1,rpm:240}],
+   obstacles:[{x:300,y:190,r:28}],
+   inv:[[[10,0],[30,1]],24,9,20,32,26,30,18,14]}
+];
+/*LEVELS_END*/
+
+let LV=null,lvIdx=0,pieces=[],pegs=[],drag=null,mouse={x:0,y:0},Theta=0,holdT=0,mode='play',winInfo=null,sim=null,anim=0,mute=false;
+let done=[],best={},tutSeen=false;
+try{done=JSON.parse(localStorage.getItem('mc_done')||'[]');best=JSON.parse(localStorage.getItem('mc_best')||'{}');tutSeen=localStorage.getItem('mc_tut')==='1'}catch(e){done=[];best={}}
+done[0]=tutSeen;
+
+/* ---------- audio ---------- */
+let AC=null;
+function sfx(f,d,type,v,slide){
+  if(mute)return;
+  try{
+    if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+    const t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();
+    o.type=type||'square';o.frequency.setValueAtTime(f,t);
+    if(slide)o.frequency.linearRampToValueAtTime(f+slide,t+d);
+    g.gain.setValueAtTime(v||.04,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);
+    o.connect(g);g.connect(AC.destination);o.start(t);o.stop(t+d);
+  }catch(e){}
+}
+
+/* ---------- musica ---------- */
+const music=new Audio('clockwork_cogitation.mp3');
+music.loop=true;music.preload='auto';
+let musicOn=true,musicVol=60,musicMissing=false,musicWanted=false;
+try{const v=parseInt(localStorage.getItem('mc_vol'),10);if(v>=0&&v<=100)musicVol=v;if(localStorage.getItem('mc_music')==='0')musicOn=false}catch(e){}
+function volGain(v){return v<=0?0:Math.pow(10,((v/100)*50-50)/20)} /* scala logaritmica: da -50 dB a 0 dB */
+function applyVol(){
+  try{music.volume=volGain(musicVol)}catch(e){}
+  $('gcvoldb').textContent=musicVol<=0?'muto':Math.round((musicVol/100)*50-50)+' dB';
+}
+function musicLabel(){$('gcmusic').textContent=musicMissing?'MUSICA: FILE NON TROVATO':'MUSICA: '+(musicOn?'ON':'OFF')}
+function startMusic(){
+  musicWanted=true;
+  if(!musicOn||musicMissing)return;
+  applyVol();
+  if(music.paused){const p=music.play();if(p&&p.catch)p.catch(()=>{})}
+}
+music.addEventListener('error',()=>{musicMissing=true;musicLabel()});
+function toggleMusic(){
+  musicOn=!musicOn;
+  try{localStorage.setItem('mc_music',musicOn?'1':'0')}catch(e){}
+  if(musicOn){if(musicWanted)startMusic()}else music.pause();
+  musicLabel();
+}
+
+/* ---------- geometria e regole ---------- */
+function placedGears(excl){
+  const out=[];
+  for(const p of pieces){
+    if(!p.placed||p===excl)continue;
+    p.gears.forEach((g,k)=>out.push({p:p,k:k,n:g.n,pl:p.pl[k],x:p.x,y:p.y,r:rad(g.n)}));
+  }
+  return out;
+}
+function validAt(piece,x,y,pls,others){
+  for(let k=0;k<piece.gears.length;k++){
+    const r=rad(piece.gears[k].n),rt=r+TIP;
+    if(x-rt<2||x+rt>BW-2||y-rt<2||y+rt>BH-2)return false;
+    for(const o of (LV.obstacles||[]))if(Math.hypot(x-o.x,y-o.y)<o.r+rt-1)return false;
+    for(const o of others)if(Math.hypot(x-o.x,y-o.y)<1||(o.pl===pls[k]&&Math.hypot(x-o.x,y-o.y)<r+o.r-1))return false;
+  }
+  return true;
+}
+function meshCount(piece,x,y,pls,others){
+  let m=0;
+  for(let k=0;k<piece.gears.length;k++){
+    const r=rad(piece.gears[k].n);
+    for(const o of others)if(o.pl===pls[k]&&Math.abs(Math.hypot(x-o.x,y-o.y)-(r+o.r))<=TOL)m++;
+  }
+  return m;
+}
+function circInt(a,b){
+  const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+  if(d<1e-6||d>a.d+b.d||d<Math.abs(a.d-b.d))return [];
+  const l=(a.d*a.d-b.d*b.d+d*d)/(2*d),h2=a.d*a.d-l*l;
+  if(h2<0)return [];
+  const h=Math.sqrt(h2),mx=a.x+dx*l/d,my=a.y+dy*l/d;
+  return [{x:mx+h*dy/d,y:my-h*dx/d},{x:mx-h*dy/d,y:my+h*dx/d}];
+}
+function planeSets(piece){
+  const single=piece.gears.length===1&&piece.gears[0].p===null;
+  return single?[[0],[1]]:[piece.gears.map(g=>g.p===null?0:g.p)];
+}
+function constraintsFor(piece,pls,others){
+  const cons=[];
+  piece.gears.forEach((g,k)=>{
+    const r=rad(g.n);
+    for(const o of others)if(o.pl===pls[k])cons.push({x:o.x,y:o.y,d:r+o.r});
+  });
+  return cons;
+}
+/* posizione agganciata per un pezzo trascinato verso (px,py); null se non valida */
+function snapPlace(piece,px,py){
+  const others=placedGears(piece);
+  let best=null;
+  for(const pls of planeSets(piece)){
+    const cons=constraintsFor(piece,pls,others);
+    const cand=[];
+    for(const c of cons){
+      let dx=px-c.x,dy=py-c.y,l=Math.hypot(dx,dy);
+      if(l<1e-6){dx=1;dy=0;l=1}
+      cand.push({x:c.x+dx/l*c.d,y:c.y+dy/l*c.d});
+    }
+    for(let i=0;i<cons.length;i++)for(let j=i+1;j<cons.length;j++)for(const q of circInt(cons[i],cons[j]))cand.push(q);
+    for(const pg of pegs)cand.push({x:pg.x,y:pg.y,peg:true});
+    for(const c of cand){
+      const dist=Math.hypot(c.x-px,c.y-py);
+      if(dist>SNAP)continue;
+      if(!validAt(piece,c.x,c.y,pls,others))continue;
+      const m=meshCount(piece,c.x,c.y,pls,others);
+      const sc=dist-20*m-(c.peg?25:0);
+      if(!best||sc<best.sc)best={x:c.x,y:c.y,pl:pls,sc:sc,m:m,snapped:true};
+    }
+  }
+  if(best)return best;
+  for(const pls of planeSets(piece))if(validAt(piece,px,py,pls,others))return {x:px,y:py,pl:pls,m:0,snapped:false};
+  return null;
+}
+
+/* ---------- simulazione cinematica ---------- */
+function simulate(){
+  const gs=placedGears(null),n=gs.length;
+  const adj=gs.map(()=>[]);
+  for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+    const a=gs[i],b=gs[j];
+    if(a.p===b.p){adj[i].push([j,'a']);adj[j].push([i,'a']);continue}
+    if(a.pl!==b.pl)continue;
+    if(Math.abs(Math.hypot(a.x-b.x,a.y-b.y)-(a.r+b.r))<=TOL){adj[i].push([j,'m']);adj[j].push([i,'m'])}
+  }
+  const ratio=new Array(n).fill(null),phase=new Array(n).fill(0);
+  const s=gs.findIndex(g=>g.p.role==='motor');
+  let jam=false;const comp=[];
+  if(s>=0){
+    ratio[s]=1;const q=[s];
+    for(let h=0;h<q.length;h++){
+      const u=q[h];comp.push(u);
+      for(const e of adj[u]){
+        const v=e[0],t=e[1];
+        const val=t==='a'?ratio[u]:-ratio[u]*gs[u].n/gs[v].n;
+        if(ratio[v]===null){
+          ratio[v]=val;
+          if(t==='a')phase[v]=phase[u];
+          else{
+            const phi=Math.atan2(gs[v].y-gs[u].y,gs[v].x-gs[u].x);
+            phase[v]=((gs[u].n+gs[v].n)*phi+(gs[v].n-1)*Math.PI-gs[u].n*phase[u])/gs[v].n;
+          }
+          q.push(v);
+        }else if(Math.abs(ratio[v]-val)>1e-6)jam=true;
+      }
+    }
+  }
+  if(jam)for(const i of comp)ratio[i]=0;
+  for(let i=0;i<n;i++)if(ratio[i]===null)ratio[i]=0;
+  return {gs:gs,ratio:ratio,phase:phase,jam:jam,comp:new Set(comp)};
+}
+function targetStatus(){
+  return LV.targets.map(t=>{
+    let k=-1;
+    if(t.n)k=sim.gs.findIndex(g=>g.p.role==='target'&&g.p.t===t);
+    else k=sim.gs.findIndex(g=>!g.p.fixed&&Math.hypot(g.x-t.x,g.y-t.y)<1);
+    const present=k>=0,omega=present?sim.ratio[k]*LV.motor.rpm:0;
+    const tol=t.tol==null?0.05:t.tol;
+    const ok=present&&omega!==0&&Math.sign(omega)===t.dir&&Math.abs(Math.abs(omega)-t.rpm)<=t.rpm*tol+1e-6;
+    return {t:t,present:present,omega:omega,ok:ok,teeth:present?sim.gs[k].n:0};
+  });
+}
+
+/* ---------- livelli ---------- */
+function loadLevel(i){
+  lvIdx=i;LV=LEVELS[i];pieces=[];pegs=[];let id=0;
+  const mk=(role,n,pl,x,y)=>({id:id++,role:role,gears:[{n:n,p:pl}],pl:[pl],x:x,y:y,placed:true,fixed:true});
+  pieces.push(mk('motor',LV.motor.n,0,LV.motor.x,LV.motor.y));
+  for(const f of (LV.fixed||[]))pieces.push(mk('fixed',f.n,f.plane||0,f.x,f.y));
+  for(const t of LV.targets){
+    if(t.n){const p=mk('target',t.n,t.plane||0,t.x,t.y);p.t=t;pieces.push(p)}
+    else pegs.push({x:t.x,y:t.y,t:t});
+  }
+  for(const s of LV.inv){
+    const gears=(typeof s==='number')?[{n:s,p:null}]:s.map(a=>({n:a[0],p:a[1]}));
+    pieces.push({id:id++,role:null,gears:gears,pl:gears.map(g=>g.p),x:0,y:0,placed:false,fixed:false});
+  }
+  Theta=0;holdT=0;mode='play';winInfo=null;drag=null;
+  const tut=!!LV.tutorial;
+  $('gctnav').hidden=!tut;$('gcreset').hidden=tut;
+  if(tut){buildTut(0,false)}
+  else{sim=simulate();$('gcgoal').textContent='Obiettivo: '+LV.goal}
+  updateHud();buildLevelButtons();
+}
+function usedCount(){return pieces.filter(p=>!p.fixed&&p.placed).length}
+function movableCount(){return pieces.filter(p=>!p.fixed).length}
+function updateHud(){
+  $('gclevel').textContent=(lvIdx+1)+'/'+LEVELS.length+' '+LV.name;
+  $('gcused').textContent=LV.tutorial?'-':usedCount()+' / '+movableCount();
+  $('gcbest').textContent=(!LV.tutorial&&best[lvIdx]!=null)?String(best[lvIdx]):'-';
+  $('gcstatus').textContent='⚙ '+(LV.tutorial?'LEZIONE':mode==='won'?'ENIGMA RISOLTO':(sim&&sim.jam?'INCEPPATO':'IN FUNZIONE'));
+}
+function buildLevelButtons(){
+  const box=$('gclevels');box.innerHTML='';
+  LEVELS.forEach((L,i)=>{
+    const b=document.createElement('button');
+    b.textContent=String(i+1);b.title=L.name;
+    b.className=(i===lvIdx?'cur ':'')+(done[i]?'done':'');
+    b.addEventListener('click',()=>{loadLevel(i);b.blur()});
+    box.appendChild(b);
+  });
+}
+function win(){
+  mode='won';
+  const u=usedCount();
+  winInfo={used:u,last:lvIdx===LEVELS.length-1,newBest:best[lvIdx]==null||u<best[lvIdx]};
+  if(winInfo.newBest)best[lvIdx]=u;
+  done[lvIdx]=true;
+  try{localStorage.setItem('mc_done',JSON.stringify(done));localStorage.setItem('mc_best',JSON.stringify(best))}catch(e){}
+  sfx(520,.5,'triangle',.06,400);
+  updateHud();buildLevelButtons();
+}
+function nextLevel(){loadLevel(lvIdx+1<LEVELS.length?lvIdx+1:0)}
+
+function update(dt){
+  anim+=dt;
+  sim=simulate();
+  if(LV.tutorial){Theta+=LV.motor.rpm*2*Math.PI/60*dt;return}
+  if(mode==='play'){
+    if(!sim.jam)Theta+=LV.motor.rpm*2*Math.PI/60*dt;
+    const st=targetStatus();
+    const allOk=!sim.jam&&st.every(s=>s.ok)&&!drag;
+    holdT=allOk?holdT+dt:0;
+    if(holdT>=HOLD)win();
+  }
+}
+
+/* ---------- disegno ---------- */
+const COL={
+  0:{base:'#b58236',light:'#e6bd6a',dark:'#5e3f14'},
+  1:{base:'#c0603a',light:'#f0a070',dark:'#64291a'},
+  steel:{base:'#76838c',light:'#b0bcc3',dark:'#363f45'}
+};
+function drawGear(x,y,n,th,col,alpha,label,pill,mark){
+  const r=rad(n),rt=r+TIP,rr=r-ROOT,pitch=Math.PI*2/n;
+  ctx.save();ctx.globalAlpha=alpha==null?1:alpha;
+  ctx.beginPath();
+  for(let i=0;i<n;i++){
+    const a=th+i*pitch;
+    const q=[[a-.30*pitch,rr],[a-.16*pitch,rt],[a+.16*pitch,rt],[a+.30*pitch,rr]];
+    for(let j=0;j<4;j++){
+      const px=x+Math.cos(q[j][0])*q[j][1],py=y+Math.sin(q[j][0])*q[j][1];
+      if(i===0&&j===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);
+    }
+  }
+  ctx.closePath();
+  const gr=ctx.createRadialGradient(x-r*.35,y-r*.35,r*.1,x,y,rt);
+  gr.addColorStop(0,col.light);gr.addColorStop(1,col.base);
+  ctx.fillStyle=gr;ctx.fill();ctx.lineWidth=1.5;ctx.strokeStyle=col.dark;ctx.stroke();
+  if(n>=16){
+    const k=n>=28?6:5;ctx.fillStyle='rgba(15,12,9,.78)';
+    for(let i=0;i<k;i++){const a=th+i*Math.PI*2/k;ctx.beginPath();ctx.arc(x+Math.cos(a)*r*.58,y+Math.sin(a)*r*.58,r*.17,0,Math.PI*2);ctx.fill()}
+  }else{
+    ctx.strokeStyle=col.dark;ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+Math.cos(th)*r*.8,y+Math.sin(th)*r*.8);ctx.stroke();
+  }
+  if(mark){ctx.fillStyle='#ff5a3c';ctx.strokeStyle='#2a0f08';ctx.lineWidth=1;ctx.beginPath();ctx.arc(x+Math.cos(th)*(rt-4),y+Math.sin(th)*(rt-4),3.6,0,Math.PI*2);ctx.fill();ctx.stroke()}
+  const hr=Math.max(8,r*.26);
+  ctx.fillStyle=col.dark;ctx.beginPath();ctx.arc(x,y,hr,0,Math.PI*2);ctx.fill();
+  const lab=label==null?String(n):label;
+  if(lab){
+    ctx.fillStyle=col.light;ctx.font='bold '+Math.round(Math.max(8,Math.min(13,hr*.9)))+'px ui-monospace,monospace';
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(lab,x,y+.5);
+  }
+  if(pill){
+    const a=-Math.PI/4,qx=x+Math.cos(a)*r*.62,qy=y+Math.sin(a)*r*.62;
+    ctx.fillStyle='rgba(15,12,9,.85)';ctx.fillRect(qx-11,qy-8,22,16);
+    ctx.fillStyle=col.light;ctx.font='bold 11px ui-monospace,monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(pill,qx,qy+.5);
+  }
+  ctx.restore();
+}
+function colFor(piece,k){
+  if(piece.fixed&&piece.role!=='target'&&piece.role!=='tut')return COL.steel;
+  const pl=piece.pl[k];return COL[pl==null?0:pl];
+}
+function drawSpin(cx,cy,r,dir,color){
+  const a0=-Math.PI*.65,a1=a0+dir*Math.PI*1.35;
+  ctx.save();ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(cx,cy,r,a0,a1,dir<0);ctx.stroke();
+  const ex=cx+Math.cos(a1)*r,ey=cy+Math.sin(a1)*r;
+  const tx=dir>0?-Math.sin(a1):Math.sin(a1),ty=dir>0?Math.cos(a1):-Math.cos(a1);
+  const nx=-ty,ny=tx;
+  ctx.beginPath();ctx.moveTo(ex+tx*5,ey+ty*5);ctx.lineTo(ex-tx*2+nx*4,ey-ty*2+ny*4);ctx.lineTo(ex-tx*2-nx*4,ey-ty*2-ny*4);ctx.closePath();ctx.fill();
+  ctx.restore();
+}
+function compLabel(piece,k){
+  if(piece.gears.length!==2)return {label:null,pill:null};
+  const big=piece.gears[k].n>piece.gears[1-k].n,n=String(piece.gears[k].n);
+  return big?{label:'',pill:n}:{label:n,pill:null};
+}
+function rpmText(v){return Math.abs(v)<.05?'0 giri/min':(Math.round(Math.abs(v)*10)/10)+' giri/min'}
+function drawBoard(){
+  ctx.fillStyle='#14100c';ctx.fillRect(0,0,CW,CH);
+  const g=ctx.createLinearGradient(0,0,0,BH);g.addColorStop(0,'#2b251d');g.addColorStop(1,'#1b1711');
+  ctx.fillStyle=g;ctx.fillRect(0,0,BW,BH);
+  ctx.strokeStyle='rgba(200,160,90,.055)';ctx.lineWidth=1;
+  for(let x=40;x<BW;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,BH);ctx.stroke()}
+  for(let y=40;y<BH;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(BW,y);ctx.stroke()}
+  ctx.strokeStyle='#6d5434';ctx.lineWidth=3;ctx.strokeRect(1.5,1.5,BW-3,BH-3);
+  ctx.fillStyle='#8a6c42';
+  for(let x=20;x<BW;x+=40){for(const y of [8,BH-8]){ctx.beginPath();ctx.arc(x,y,2.2,0,6.2832);ctx.fill()}}
+  for(let y=20;y<BH;y+=40){for(const x of [8,BW-8]){ctx.beginPath();ctx.arc(x,y,2.2,0,6.2832);ctx.fill()}}
+}
+function drawObstacles(){
+  for(const o of (LV.obstacles||[])){
+    const gr=ctx.createRadialGradient(o.x-o.r*.3,o.y-o.r*.3,o.r*.1,o.x,o.y,o.r);
+    gr.addColorStop(0,'#59626a');gr.addColorStop(1,'#272d31');
+    ctx.fillStyle=gr;ctx.beginPath();ctx.arc(o.x,o.y,o.r,0,6.2832);ctx.fill();
+    ctx.strokeStyle='#14181a';ctx.lineWidth=3;ctx.stroke();
+    ctx.fillStyle='#8f9aa2';
+    for(let i=0;i<8;i++){const a=i*Math.PI/4;ctx.beginPath();ctx.arc(o.x+Math.cos(a)*(o.r-8),o.y+Math.sin(a)*(o.r-8),2.4,0,6.2832);ctx.fill()}
+    ctx.fillStyle='#14181a';ctx.font='bold 10px ui-monospace,monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('COLONNA',o.x,o.y);
+  }
+}
+function drawPegs(){
+  const st=targetStatus();
+  for(const pg of pegs){
+    const s=st.find(q=>q.t===pg.t);
+    const ok=s&&s.ok;
+    ctx.save();
+    ctx.strokeStyle=ok?'#7fd06a':'#b88a4a';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(pg.x,pg.y,16+(s&&s.present?0:Math.sin(anim*3)*2),0,6.2832);ctx.stroke();
+    ctx.fillStyle='#17130e';ctx.beginPath();ctx.arc(pg.x,pg.y,9,0,6.2832);ctx.fill();
+    ctx.strokeStyle='#b88a4a';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(pg.x-6,pg.y);ctx.lineTo(pg.x+6,pg.y);ctx.moveTo(pg.x,pg.y-6);ctx.lineTo(pg.x,pg.y+6);ctx.stroke();
+    ctx.restore();
+  }
+}
+function targetBase(t){
+  if(t.n)return {x:t.x,y:t.y,R:rad(t.n)+TIP+7};
+  return {x:t.x,y:t.y,R:18};
+}
+function drawBadges(){
+  if(LV.targets.length<2)return;
+  const st=targetStatus();
+  st.forEach((s,i)=>{
+    const b=targetBase(s.t),bx=b.x,by=b.y-b.R-12;
+    ctx.save();ctx.fillStyle=s.ok?'#3d7a2f':'#7a3a1f';ctx.strokeStyle=s.ok?'#8fe07a':'#e6b866';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(bx,by,10,0,6.2832);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font='bold 12px ui-monospace,monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(i+1),bx,by+.5);
+    ctx.restore();
+  });
+}
+function drawTargetRings(){
+  const st=targetStatus();
+  for(const s of st){
+    const t=s.t;
+    if(!t.n)continue;
+    ctx.save();ctx.strokeStyle=s.ok?'#7fd06a':'#a8472f';ctx.lineWidth=3;ctx.globalAlpha=.85;
+    ctx.beginPath();ctx.arc(t.x,t.y,rad(t.n)+TIP+7,0,6.2832);ctx.stroke();ctx.restore();
+  }
+}
+function drawPanel(){
+  const st=targetStatus(),w=272,rowH=46,px=BW-w-12,py=12,rows=1+st.length;
+  ctx.save();
+  ctx.fillStyle='rgba(10,8,6,.82)';ctx.fillRect(px,py,w,rows*rowH+8);
+  ctx.strokeStyle='#6d5434';ctx.lineWidth=1.5;ctx.strokeRect(px,py,w,rows*rowH+8);
+  ctx.textBaseline='middle';ctx.textAlign='left';
+  let y=py+4;
+  ctx.fillStyle='#9fb2bd';ctx.font='bold 11px ui-monospace,monospace';ctx.fillText('MOTORE',px+12,y+15);
+  drawSpin(px+104,y+15,6,1,'#9fb2bd');
+  ctx.fillText(rpmText(LV.motor.rpm),px+118,y+15);
+  ctx.font='10px ui-monospace,monospace';ctx.fillStyle='#7f8f98';ctx.fillText('giri costanti',px+12,y+33);
+  y+=rowH;
+  st.forEach((s,i)=>{
+    const col=s.ok?'#8fe07a':'#e6b866';
+    ctx.strokeStyle='rgba(109,84,52,.6)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(px+8,y);ctx.lineTo(px+w-8,y);ctx.stroke();
+    ctx.fillStyle=col;ctx.font='bold 11px ui-monospace,monospace';
+    const tag=(st.length>1?(i+1)+'  ':'')+'RICHIESTO';
+    ctx.fillText(tag,px+12,y+15);
+    drawSpin(px+104,y+15,6,s.t.dir,col);
+    ctx.fillText(rpmText(s.t.rpm),px+118,y+15);
+    ctx.font='10px ui-monospace,monospace';ctx.fillStyle=s.ok?'#8fe07a':'#b9b2a4';
+    const now=!s.present?'nessun ingranaggio':(s.omega===0?'ferma':rpmText(s.omega)+(s.omega>0?' orario':' antiorario')+' · '+s.teeth+' denti');
+    ctx.fillText('attuale: '+now,px+12,y+33);
+    y+=rowH;
+  });
+  ctx.restore();
+}
+function drawMotorPlate(){
+  const m=LV.motor,R=rad(m.n)+TIP+10;
+  ctx.save();ctx.fillStyle='#1a1d1f';ctx.strokeStyle='#4a545a';ctx.lineWidth=3;
+  ctx.beginPath();ctx.arc(m.x,m.y,R,0,6.2832);ctx.fill();ctx.stroke();ctx.restore();
+}
+function drawSimGears(planeFilter){
+  const gs=sim.gs;
+  for(let i=0;i<gs.length;i++){
+    const g=gs[i];if(g.pl!==planeFilter)continue;
+    const th=sim.phase[i]+sim.ratio[i]*Theta;
+    let x=g.x,y=g.y;
+    const jam=sim.jam&&sim.comp.has(i);
+    if(jam){x+=Math.sin(anim*60+i)*1.4;y+=Math.cos(anim*55+i)*1.4}
+    const cl=compLabel(g.p,g.k);
+    drawGear(x,y,g.n,th,colFor(g.p,g.k),1,cl.label,cl.pill,!!LV.tutorial);
+    if(jam){ctx.save();ctx.strokeStyle='#e05a3a';ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,g.r+TIP+3,0,6.2832);ctx.stroke();ctx.restore()}
+  }
+}
+function drawPieceAt(piece,x,y,pls,alpha,scale){
+  ctx.save();ctx.translate(x,y);ctx.scale(scale,scale);
+  const order=piece.gears.map((g,k)=>k).sort((a,b)=>(pls[a]||0)-(pls[b]||0));
+  for(const k of order){
+    const pl=pls[k]==null?0:pls[k];
+    const cl=compLabel(piece,k);
+    drawGear(0,0,piece.gears[k].n,0,COL[pl],alpha,cl.label,cl.pill);
+  }
+  ctx.restore();
+}
+function pieceR(piece){return Math.max(...piece.gears.map(g=>rad(g.n)))+TIP}
+function trayLayout(){
+  const items=pieces.filter(p=>!p.fixed&&!p.placed&&!(drag&&drag.piece===p));
+  const w=items.map(p=>Math.min(1,46/pieceR(p)));
+  let tot=0;items.forEach((p,i)=>{tot+=2*pieceR(p)*w[i]+22});
+  const k=tot>CW-40?(CW-40)/tot:1;
+  let x=(CW-tot*k)/2;
+  return items.map((p,i)=>{
+    const s=w[i]*k,wd=(2*pieceR(p)*w[i]+22)*k;
+    const o={p:p,x:x+wd/2,y:BH+62,s:s};x+=wd;return o;
+  });
+}
+function drawTray(){
+  const g=ctx.createLinearGradient(0,BH,0,CH);g.addColorStop(0,'#3a3126');g.addColorStop(1,'#1f1a14');
+  ctx.fillStyle=g;ctx.fillRect(0,BH,CW,CH-BH);
+  ctx.fillStyle='#8a6c42';ctx.fillRect(0,BH,CW,4);
+  ctx.fillStyle='#b9b2a4';ctx.font='10px ui-monospace,monospace';ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  ctx.fillText('VASSOIO',12,BH+20);
+  const L=trayLayout();
+  for(const t of L)drawPieceAt(t.p,t.x,t.y,t.p.pl.map(v=>v==null?0:v),1,t.s);
+  if(!L.length&&!drag){ctx.fillStyle='#8f8878';ctx.textAlign='center';ctx.fillText('vassoio vuoto',CW/2,BH+64)}
+}
+function drawDrag(){
+  if(!drag)return;
+  const piece=drag.piece;
+  const px=mouse.x+drag.ox,py=mouse.y+drag.oy;
+  if(drag.prev){
+    const pr=drag.prev;
+    drawPieceAt(piece,pr.x,pr.y,pr.pl,.8,1);
+    ctx.save();ctx.strokeStyle=pr.snapped?'#8fe07a':'#d8d0bc';ctx.lineWidth=2;ctx.setLineDash([5,4]);
+    ctx.beginPath();ctx.arc(pr.x,pr.y,pieceR(piece)+4,0,6.2832);ctx.stroke();ctx.restore();
+  }else{
+    drawPieceAt(piece,px,py,piece.pl.map(v=>v==null?0:v),.55,1);
+    ctx.save();ctx.strokeStyle='#e05a3a';ctx.lineWidth=2;ctx.setLineDash([5,4]);
+    ctx.beginPath();ctx.arc(px,py,pieceR(piece)+4,0,6.2832);ctx.stroke();ctx.restore();
+  }
+}
+function drawWin(){
+  ctx.fillStyle='rgba(8,7,5,.74)';ctx.fillRect(0,0,CW,CH);
+  ctx.textAlign='center';ctx.textBaseline='alphabetic';
+  ctx.fillStyle='#eac27f';ctx.font='bold 36px Georgia,serif';ctx.fillText(winInfo.last?'TUTTI GLI ENIGMI RISOLTI':'ENIGMA RISOLTO',CW/2,250);
+  ctx.fillStyle='#e1d3b6';ctx.font='15px ui-monospace,monospace';
+  ctx.fillText(LV.name+' · ingranaggi usati: '+winInfo.used+(winInfo.newBest?' (nuovo record)':' (record: '+best[lvIdx]+')'),CW/2,288);
+  ctx.fillStyle='#eac27f';ctx.font='14px ui-monospace,monospace';
+  ctx.fillText(winInfo.last?'CLIC o INVIO per ricominciare dal primo enigma':'CLIC o INVIO per il prossimo enigma',CW/2,336);
+}
+function draw(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(LV.tutorial){drawTutorial();return}
+  drawBoard();drawObstacles();drawMotorPlate();drawPegs();
+  drawSimGears(0);drawSimGears(1);
+  drawTargetRings();drawBadges();drawPanel();
+  drawTray();drawDrag();
+  if(mode==='won'&&winInfo)drawWin();
+}
+
+/* ---------- lezione illustrata (livello 1) ---------- */
+const fmt=x=>String(Math.round(x*100)/100).replace('.',',');
+const ratioTxt=(a,b)=>a>=b?fmt(a/b)+' : 1':'1 : '+fmt(b/a);
+const TUT=[
+  {title:'Il motore',chain:[{n:12}],
+   text:"Un ingranaggio è una ruota con i denti. Il motore (in acciaio) gira a velocità costante: 60 giri al minuto, cioè un giro al secondo, in senso orario. Il puntino rosso segna un dente, così si possono contare i giri. Da solo il motore non muove nulla: serve un'altra ruota che ingrani con i suoi denti.",
+   calc:()=>['Motore: 12 denti, 60 giri/min = 1 giro al secondo','La freccia indica il verso di rotazione: orario']},
+  {title:'Due ruote ingranate',chain:[{n:12},{n:18}],
+   text:"Parole da conoscere. RUOTA MOTRICE: la ruota che spinge, cioè quella che riceve il moto per prima (qui il motore, 12 denti). RUOTA CONDOTTA: la ruota che viene spinta dalla motrice (qui 18 denti). Quando due ruote ingranano, i denti dell'una spingono quelli dell'altra. Le frecce gialle mostrano che nel punto di contatto le due superfici si muovono nello stesso senso: per questo le ruote girano in versi opposti (ogni ingranamento inverte il verso). Nello stesso tempo passa lo stesso numero di denti su entrambe le ruote: la motrice fa un giro intero (12 denti), la condotta ne percorre 12 su 18, cioè 2/3 di giro. Più denti ha la ruota condotta, più è lenta: questa si chiama DEMOLTIPLICAZIONE (il moto rallenta). Qui il rapporto è 18 : 12 = 1,5 : 1.",
+   calc:()=>['giri/min uscita = 60 × 12 ÷ 18 = 40','Rapporto 18 : 12 = 1,5 : 1 → DEMOLTIPLICAZIONE (la ruota condotta è più lenta)','1 ingranamento → verso opposto al motore (antiorario)']},
+  {title:'Ruota più piccola',chain:[{n:12},{n:8}],
+   text:"Se la ruota condotta ha meno denti della motrice, gira più in fretta: si chiama MOLTIPLICAZIONE (il moto accelera). Con 8 denti, a ogni giro del motore (12 denti che passano) la condotta ne compie 12 ÷ 8 = 1,5. Regola generale: giri della condotta = giri della motrice × denti della motrice ÷ denti della condotta. Il verso si inverte comunque.",
+   calc:()=>['giri/min uscita = 60 × 12 ÷ 8 = 90','Rapporto 8 : 12 = 1 : 1,5 → MOLTIPLICAZIONE (la ruota condotta è più veloce)','1 ingranamento → verso opposto al motore (antiorario)']},
+  {title:'Ruota intermedia',chain:[{n:12},{n:24},{n:12}],
+   text:"Una RUOTA INTERMEDIA sta fra la prima e l'ultima: è condotta dalla prima e fa da motrice per l'ultima. Sembra strano, ma non cambia la velocità finale. Pensa ai denti come a oggetti che passano di mano: per ogni giro del motore passano 12 denti nel primo contatto. La ruota da 24 li riceve e, mentre gira, nel secondo contatto ne passa all'ultima ruota esattamente 12: né uno di più, né uno di meno, perché i denti non possono sparire né comparire. L'ultima ruota ha 12 denti e quindi fa 1 giro, come il motore. La ruota intermedia è un ponte: gira più piano (mezzo giro), ma consegna lo stesso numero di denti. Se avesse 40 denti girerebbe ancora più piano (12/40 di giro) e consegnerebbe comunque 12 denti. Per questo contano solo i denti della prima e dell'ultima ruota. Una ruota intermedia però aggiunge un ingranamento, e inverte il verso: con un numero pari di ingranamenti l'ultima ruota gira come il motore, con un numero dispari in senso opposto. Serve anche a coprire le distanze: più è grande, più lontano arriva l'ultima ruota. (Fa eccezione la ruota doppia, vedi l'ultimo passo.)",
+   calc:()=>['Denti che passano per ogni giro del motore: 12 → 12 → 12 (la ruota da 24 non ne trattiene)','60 × 12 ÷ 24 = 30 giri/min (intermedia); poi 30 × 24 ÷ 12 = 60 giri/min (ultima ruota)','2 ingranamenti (pari) → stesso verso del motore (orario)']},
+  {title:'Prova tu',chain:[{n:12},{n:18}],cycle:[8,12,18,24,36],
+   text:"Tocca la ruota condotta (quella spinta dal motore) per cambiarne il numero di denti (8, 12, 18, 24, 36) e osserva velocità, verso e rapporto. Con più denti del motore la condotta rallenta (demoltiplicazione), con meno accelera (moltiplicazione); con lo stesso numero di denti gira alla stessa velocità, ma sempre in verso opposto.",
+   calc:n=>{const r=60*12/n;return ['giri/min uscita = 60 × 12 ÷ '+n+' = '+fmt(r),'Rapporto '+n+' : 12 = '+ratioTxt(n,12)+' → '+(n>12?'DEMOLTIPLICAZIONE (più lenta)':n<12?'MOLTIPLICAZIONE (più veloce)':'VELOCITÀ INVARIATA'),'Tocca la ruota condotta per cambiare il numero di denti']}},
+  {title:'Ruota doppia e piani',chain:[{n:12},{g:[[24,0],[12,1]]},{n:36,pl:1}],
+   text:"Le ruote ottone (piano posteriore) e rame (piano anteriore) ingranano solo con ruote dello stesso colore: la ruota da 24 passa dietro quella da 36 senza toccarla. La ruota doppia ha due ingranaggi sullo stesso asse, uno per piano: girano insieme, alla stessa velocità angolare, e collegano i due piani. Qui il motore (ottone) muove la parte da 24; la parte da 12 (rame) muove la ruota da 36. Qui la regola della ruota intermedia non vale: le due ruote sullo stesso asse fanno lo stesso angolo ma hanno denti diversi, quindi consegnano un numero diverso di denti e il rapporto cambia. I due stadi si moltiplicano: 12/24 × 12/36 = 1/6, una riduzione di 6 : 1 che con ruote semplici richiederebbe ruote enormi. Ora tocca a te: nel gioco si trascinano le ruote dal vassoio alla scacchiera.",
+   calc:()=>['Stadio 1: 60 × 12 ÷ 24 = 30 giri/min (asse doppio)','Stadio 2: 30 × 12 ÷ 36 = 10 giri/min (ruota da 36, rame)','Rapporto totale 6 : 1 → DEMOLTIPLICAZIONE · 2 ingranamenti → verso orario']}
+];
+let tutStep=0,tutIdx=2,tutView=null,tutN=[];
+function tutLayout(st,cyc){
+  const ns=st.chain.map(c=>({g:c.g||[[c.n,c.pl||0]]}));
+  if(st.cycle)ns[ns.length-1].g=[[cyc,0]];
+  let x=0;
+  ns.forEach((c,k)=>{
+    c.inN=c.g[0][0];c.outN=c.g[c.g.length-1][0];
+    if(k>0)x+=MOD*(ns[k-1].outN+c.inN);
+    c.x=x;
+  });
+  return ns;
+}
+function buildTut(i,keep){
+  tutStep=i;const st=TUT[i];
+  if(!keep)Theta=0;
+  const cyc=st.cycle?st.cycle[tutIdx%st.cycle.length]:0;
+  const ns=tutLayout(st,cyc);
+  const vns=st.cycle?tutLayout(st,Math.max.apply(null,st.cycle)):ns;
+  let x0=1e9,x1=-1e9,hh=0;
+  vns.forEach(c=>c.g.forEach(a=>{const R=rad(a[0])+TIP;x0=Math.min(x0,c.x-R);x1=Math.max(x1,c.x+R);hh=Math.max(hh,R)}));
+  const S=Math.min(820/(x1-x0),250/(2*hh),2.4);
+  tutView={S:S,ox:480-(x0+x1)/2*S,oy:200,hh:hh,rows:vns.some(c=>c.g.some(a=>a[1]===1))?2:1};
+  pieces=[];pegs=[];let id=0;
+  ns.forEach((c,k)=>{
+    const gears=c.g.map(a=>({n:a[0],p:a[1]}));
+    pieces.push({id:id++,role:k===0?'motor':'tut',gears:gears,pl:gears.map(g=>g.p),x:c.x,y:0,placed:true,fixed:true});
+  });
+  sim=simulate();
+  $('gcgoal').textContent=st.text;
+  $('gctstep').textContent='PASSO '+(i+1)+'/'+TUT.length;
+  $('gctprev').disabled=i===0;
+  $('gctnext').innerHTML=i===TUT.length-1?'ENIGMA 2 &#9654;':'AVANTI &#9654;';
+}
+function tutGo(d){
+  if(!LV||!LV.tutorial)return;
+  const n=tutStep+d;
+  if(n<0)return;
+  if(n>=TUT.length){
+    tutSeen=true;done[0]=true;
+    try{localStorage.setItem('mc_tut','1');localStorage.setItem('mc_done',JSON.stringify(done))}catch(e){}
+    sfx(520,.3,'triangle',.05,300);loadLevel(1);return;
+  }
+  sfx(300,.06,'triangle',.03,60);
+  buildTut(n,false);
+}
+function tutPointer(m){
+  const st=TUT[tutStep];
+  if(!st.cycle||m.y>BH)return;
+  const last=pieces[pieces.length-1],g=last.gears[0];
+  const cx=tutView.ox+last.x*tutView.S,cy=tutView.oy,R=(rad(g.n)+TIP)*tutView.S;
+  if(Math.hypot(m.x-cx,m.y-cy)<=R+6){
+    tutIdx=(tutIdx+1)%st.cycle.length;
+    buildTut(tutStep,true);sfx(260,.05,'square',.03,80);
+  }
+}
+function fitText(t,x,y,maxW,font,size){
+  let sz=size;ctx.font=font.replace('#',sz);
+  while(ctx.measureText(t).width>maxW&&sz>9){sz--;ctx.font=font.replace('#',sz)}
+  ctx.fillText(t,x,y);
+}
+function drawTutorial(){
+  const st=TUT[tutStep],V=tutView;
+  drawBoard();
+  ctx.fillStyle='#eac27f';ctx.font='bold 22px Georgia,serif';ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  ctx.fillText('PASSO '+(tutStep+1)+'/'+TUT.length+' · '+st.title.toUpperCase(),24,40);
+  ctx.save();ctx.translate(V.ox,V.oy);ctx.scale(V.S,V.S);
+  drawSimGears(0);drawSimGears(1);
+  /* frecce nel punto di contatto: la velocità superficiale è la stessa per entrambe le ruote */
+  const gs=sim.gs;
+  for(let i=0;i<gs.length;i++)for(let j=i+1;j<gs.length;j++){
+    const a=gs[i],b=gs[j];
+    if(a.p===b.p||a.pl!==b.pl||Math.abs(Math.hypot(a.x-b.x,a.y-b.y)-(a.r+b.r))>TOL||sim.ratio[i]===0)continue;
+    const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy),sg=sim.ratio[i]>0?1:-1;
+    const cx=a.x+dx/d*a.r,cy=a.y+dy/d*a.r,vx=-dy/d*sg,vy=dx/d*sg,L=22;
+    ctx.save();ctx.strokeStyle='#ffe066';ctx.fillStyle='#ffe066';ctx.lineWidth=3/V.S*1.6;
+    ctx.beginPath();ctx.moveTo(cx-vx*L,cy-vy*L);ctx.lineTo(cx+vx*L,cy+vy*L);ctx.stroke();
+    const hx=cx+vx*L,hy=cy+vy*L,nx=-vy,ny=vx;
+    ctx.beginPath();ctx.moveTo(hx+vx*9,hy+vy*9);ctx.lineTo(hx-vx*3+nx*6,hy-vy*3+ny*6);ctx.lineTo(hx-vx*3-nx*6,hy-vy*3-ny*6);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.arc(cx,cy,3.2,0,6.2832);ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+  /* didascalie sotto ogni ingranaggio (spostate in orizzontale se si sovrappongono) */
+  const cb=V.oy+V.hh*V.S+16;
+  const caps=[];
+  for(let i=0;i<gs.length;i++){
+    const g=gs[i],row=V.rows===2?g.pl:0,x=V.ox+g.x*V.S;
+    const om=sim.ratio[i]*LV.motor.rpm,revs=Math.abs(sim.ratio[i])*Theta/(2*Math.PI);
+    const t1=fmt(Math.abs(om))+' giri/min',dir=om>0?1:-1;
+    const t2=(dir>0?'orario':'antiorario')+' · '+g.n+' denti';
+    const t3='giri compiuti: '+fmt(Math.floor(revs*10)/10).replace(/^(\d+)$/,'$1,0');
+    ctx.font='bold 15px ui-monospace,monospace';const w1=ctx.measureText(t1).width+24;
+    ctx.font='13px ui-monospace,monospace';
+    const w=Math.max(w1,ctx.measureText(t2).width,ctx.measureText(t3).width)+16;
+    caps.push({g:g,row:row,x:x,cx:x,w:w,w1:w1,t1:t1,t2:t2,t3:t3,dir:dir});
+  }
+  for(let r=0;r<2;r++){
+    const rc=caps.filter(c=>c.row===r).sort((p,q)=>p.x-q.x);
+    for(let pass=0;pass<40;pass++){
+      for(let k=0;k+1<rc.length;k++){
+        const d=rc[k+1].cx-rc[k].cx,need=(rc[k].w+rc[k+1].w)/2+6;
+        if(d<need){const e=(need-d)/2;rc[k].cx-=e;rc[k+1].cx+=e}
+      }
+      rc.forEach(c=>{c.cx=Math.max(c.w/2+4,Math.min(CW-c.w/2-4,c.cx))});
+    }
+  }
+  caps.forEach(c=>{
+    const y0=cb+c.row*58,col=colFor(c.g.p,c.g.k).light;
+    if(c.row===0&&Math.abs(c.cx-c.x)>4){ctx.strokeStyle='rgba(216,205,180,.45)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(c.x,cb-14);ctx.lineTo(c.x,cb-6);ctx.lineTo(c.cx,cb-6);ctx.lineTo(c.cx,y0-2);ctx.stroke()}
+    ctx.font='bold 15px ui-monospace,monospace';ctx.textBaseline='middle';ctx.textAlign='left';
+    drawSpin(c.cx-c.w1/2+8,y0+11,7,c.dir,col);
+    ctx.fillStyle=col;ctx.fillText(c.t1,c.cx-c.w1/2+24,y0+11);
+    ctx.textAlign='center';ctx.font='13px ui-monospace,monospace';ctx.fillStyle='#d8cdb4';
+    ctx.fillText(c.t2,c.cx,y0+30);
+    ctx.fillStyle='#b9b2a4';ctx.fillText(c.t3,c.cx,y0+47);
+  });
+  /* riquadro del calcolo */
+  const g2=ctx.createLinearGradient(0,BH,0,CH);g2.addColorStop(0,'#3a3126');g2.addColorStop(1,'#1f1a14');
+  ctx.fillStyle=g2;ctx.fillRect(0,BH,CW,CH-BH);ctx.fillStyle='#8a6c42';ctx.fillRect(0,BH,CW,4);
+  const lines=st.calc(st.cycle?st.cycle[tutIdx%st.cycle.length]:0);
+  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  lines.forEach((t,k)=>{
+    ctx.fillStyle=k===0?'#f2cf8a':'#d8cdb4';
+    fitText(t,24,BH+38+k*32,CW-48,(k===0?'bold ':'')+'#px ui-monospace,monospace',k===0?19:16);
+  });
+  if(st.cycle){
+    const last=pieces[pieces.length-1],g=last.gears[0],cx=V.ox+last.x*V.S,cy=V.oy,R=(rad(g.n)+TIP)*V.S;
+    ctx.save();ctx.strokeStyle='#8fe07a';ctx.lineWidth=2;ctx.setLineDash([6,5]);ctx.lineDashOffset=-anim*20;
+    ctx.beginPath();ctx.arc(cx,cy,R+8,0,6.2832);ctx.stroke();ctx.restore();
+  }
+}
+
+/* ---------- ingresso ---------- */
+function pos(e){const r=cv.getBoundingClientRect();return {x:(e.clientX-r.left)*CW/r.width,y:(e.clientY-r.top)*CH/r.height}}
+function hitBoard(m){
+  const gs=placedGears(null).filter(g=>!g.p.fixed).sort((a,b)=>(b.pl-a.pl)||(a.r-b.r));
+  for(const g of gs)if(Math.hypot(m.x-g.x,m.y-g.y)<=g.r+TIP)return g.p;
+  return null;
+}
+function hitTray(m){
+  for(const t of trayLayout())if(Math.hypot(m.x-t.x,m.y-t.y)<=pieceR(t.p)*t.s)return t.p;
+  return null;
+}
+function refresh(){sim=simulate();updateHud()}
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  const m=pos(e);mouse=m;
+  if(LV.tutorial){if(e.button<=0)tutPointer(m);return}
+  if(mode==='won'){nextLevel();return}
+  if(e.button>0)return;
+  let piece=null,from=null;
+  if(m.y>BH){piece=hitTray(m);from='tray'}
+  else{piece=hitBoard(m);from='board'}
+  if(!piece)return;
+  try{cv.setPointerCapture(e.pointerId)}catch(_){}
+  drag={piece:piece,ox:0,oy:0,prev:null,origin:null,sx:m.x,sy:m.y,moved:false};
+  if(from==='board'){
+    drag.origin={x:piece.x,y:piece.y,pl:piece.pl.slice()};
+    drag.ox=piece.x-m.x;drag.oy=piece.y-m.y;
+    piece.placed=false;
+    if(piece.gears.length===1&&piece.gears[0].p===null)piece.pl=[null];
+  }
+  refresh();
+  drag.prev=m.y>BH?null:snapPlace(piece,m.x+drag.ox,m.y+drag.oy);
+});
+cv.addEventListener('pointermove',e=>{
+  const m=pos(e);mouse=m;
+  if(!drag)return;
+  if(!drag.moved&&Math.hypot(m.x-drag.sx,m.y-drag.sy)>5)drag.moved=true;
+  drag.prev=m.y>BH?null:snapPlace(drag.piece,m.x+drag.ox,m.y+drag.oy);
+});
+function endDrag(e,cancel){
+  if(!drag)return;
+  const d=drag;drag=null;
+  const m=pos(e);
+  const piece=d.piece;
+  if(!cancel&&d.origin&&!d.moved&&m.y<=BH&&piece.gears.length===1&&piece.gears[0].p===null&&d.origin.pl[0]!=null){
+    /* tocco senza trascinare: porta l'ingranaggio singolo sull'altro piano */
+    const np=d.origin.pl[0]===0?1:0;
+    if(validAt(piece,d.origin.x,d.origin.y,[np],placedGears(piece))){
+      piece.x=d.origin.x;piece.y=d.origin.y;piece.pl=[np];piece.placed=true;
+      sfx(300,.08,'triangle',.04,120);
+    }else{
+      piece.x=d.origin.x;piece.y=d.origin.y;piece.pl=d.origin.pl;piece.placed=true;
+      sfx(110,.15,'sawtooth',.04,-40);
+    }
+    refresh();return;
+  }
+  if(!cancel&&m.y<=BH&&d.prev){
+    piece.x=d.prev.x;piece.y=d.prev.y;piece.pl=d.prev.pl.slice();piece.placed=true;
+    sfx(200,.07,'square',.04,-60);
+  }else if(!cancel&&m.y>BH){
+    piece.placed=false;piece.pl=piece.gears.map(g=>g.p);
+    if(d.origin)sfx(150,.06,'square',.03);
+  }else{
+    if(d.origin){piece.x=d.origin.x;piece.y=d.origin.y;piece.pl=d.origin.pl;piece.placed=true}
+    else piece.pl=piece.gears.map(g=>g.p);
+    sfx(110,.15,'sawtooth',.04,-40);
+  }
+  refresh();
+}
+cv.addEventListener('pointerup',e=>endDrag(e,false));
+cv.addEventListener('pointercancel',e=>endDrag(e,true));
+function returnToTray(e){
+  e.preventDefault();
+  if(drag||mode==='won'||LV.tutorial)return;
+  const m=pos(e);
+  const p=m.y<=BH?hitBoard(m):null;
+  if(p){p.placed=false;p.pl=p.gears.map(g=>g.p);sfx(150,.06,'square',.03);refresh()}
+}
+cv.addEventListener('dblclick',returnToTray);
+cv.addEventListener('contextmenu',returnToTray);
+addEventListener('keydown',e=>{
+  if(LV.tutorial){
+    if(e.key==='ArrowRight'||e.key==='Enter'){e.preventDefault();tutGo(1)}
+    else if(e.key==='ArrowLeft'){e.preventDefault();tutGo(-1)}
+    return;
+  }
+  if(e.key==='Enter'&&mode==='won'){e.preventDefault();nextLevel()}
+});
+$('gctprev').addEventListener('click',()=>{tutGo(-1);$('gctprev').blur()});
+$('gctnext').addEventListener('click',()=>{tutGo(1);$('gctnext').blur()});
+$('gcmusic').addEventListener('click',()=>{toggleMusic();$('gcmusic').blur()});
+$('gcvol').value=musicVol;applyVol();musicLabel();
+$('gcvol').addEventListener('input',e=>{
+  musicVol=parseInt(e.target.value,10)||0;applyVol();
+  try{localStorage.setItem('mc_vol',String(musicVol))}catch(_){}
+});
+$('gcvol').addEventListener('change',e=>e.target.blur());
+document.addEventListener('pointerdown',()=>startMusic(),true);
+document.addEventListener('keydown',()=>startMusic(),true);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)music.pause();else if(musicWanted&&musicOn)startMusic()});
+$('gcreset').addEventListener('click',()=>{loadLevel(lvIdx);$('gcreset').blur()});
+$('gcsound').addEventListener('click',()=>{mute=!mute;$('gcsound').textContent='EFFETTI: '+(mute?'OFF':'ON');$('gcsound').blur()});
+
+/* ---------- ciclo principale ---------- */
+let lastT=0,hudT=0;
+function loop(t){
+  if(!lastT)lastT=t;
+  const dt=Math.min(.05,(t-lastT)/1000);lastT=t;
+  update(dt);draw();
+  if(++hudT%10===0)updateHud();
+  requestAnimationFrame(loop);
+}
+loadLevel(0);
+/*DEBUG_HOOK*/
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
